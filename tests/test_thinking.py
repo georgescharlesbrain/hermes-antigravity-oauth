@@ -66,10 +66,14 @@ class ThinkingTests(unittest.TestCase):
         messages = [{"role": "user", "content": "question"},
                     {"role": "assistant", "content": "answer", "reasoning_content": "SECRET_REASONING", "reasoning": "OTHER_SECRET"},
                     {"role": "user", "content": "next"}]
-        for formatter in (_format_messages_as_prompt, _format_delta_prompt):
-            text = formatter(messages)
-            self.assertNotIn("SECRET", text)
-            self.assertIn("answer", text)
+        # Full prompt keeps assistant answer text, but never reasoning content
+        full_text = _format_messages_as_prompt(messages)
+        self.assertNotIn("SECRET", full_text)
+        self.assertIn("answer", full_text)
+        # Delta prompt deliberately omits previous assistant answer text to prevent repetition
+        delta_text = _format_delta_prompt(messages)
+        self.assertNotIn("SECRET", delta_text)
+        self.assertNotIn("answer", delta_text)
 
     def test_real_agy_capture_usage_passes_through(self):
         path = Path("/home/koli/.hermes/cache/scratch/agy-thinking-probe.jsonl")

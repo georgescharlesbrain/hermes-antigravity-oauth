@@ -439,7 +439,13 @@ def _format_delta_prompt(
     max_prompt_chars: int = _MAX_PROMPT_CHARS,
     max_prompt_bytes: int = _MAX_PROMPT_BYTES,
 ) -> str:
-    """Format only the incremental messages in an ongoing multi-turn interaction."""
+    """Format only the incremental messages in an ongoing multi-turn interaction.
+
+    Assistant text is deliberately dropped (see the assistant branch below):
+    the worker session already holds its own previous turn, and re-sending it
+    inside the user event makes the model restate that answer instead of
+    answering the latest request. Assistant tool calls are kept.
+    """
     parts: list[str] = []
     last_role = ""
     for msg in new_messages:
@@ -459,11 +465,15 @@ def _format_delta_prompt(
             parts.append(f"Tool Result ({tool_id}):\n{rendered_content}")
             continue
         if role == "assistant":
+            # A delta NEVER carries the previous assistant turn's text back to
+            # the worker. The persistent worker session already holds that
+            # turn, and the delta is delivered inside a single user event
+            # ({"event": "user", ...}), so echoing the model's own last answer
+            # presents it to the model as new input: it then restates or
+            # repeats that answer instead of answering the latest request.
+            # Tool calls ARE forwarded, so the Tool Result entries below stay
+            # bound to the call ids the model emitted.
             subparts = []
-            if "Tool Result (" in rendered_content:
-                rendered_content = rendered_content.split("Tool Result (")[0].strip()
-            if rendered_content:
-                subparts.append(rendered_content)
             if tool_calls := msg.get("tool_calls"):
                 for tc in tool_calls:
                     if isinstance(tc, dict):

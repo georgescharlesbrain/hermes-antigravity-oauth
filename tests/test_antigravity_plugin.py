@@ -365,6 +365,43 @@ class AntigravityPluginTests(unittest.TestCase):
         self.assertIn("HEAD", d_prompt)
         self.assertIn("TAIL", d_prompt)
 
+    def test_format_delta_prompt_omits_previous_assistant_text(self):
+        """Regression: a delta must not echo the assistant's own last answer.
+
+        The worker session already holds its previous turn. Echoing that text
+        inside the delta's single user event made the model read its own
+        answer as the latest request and restate it.
+        """
+        from client import _format_delta_prompt
+
+        delta = [
+            {"role": "assistant", "content": "PREVIOUS ANSWER TEXT"},
+            {"role": "user", "content": "second question"},
+        ]
+        d_prompt = _format_delta_prompt(delta)
+        self.assertNotIn("PREVIOUS ANSWER TEXT", d_prompt)
+        self.assertIn("second question", d_prompt)
+        self.assertIn("Respond directly and specifically to the latest user request above.", d_prompt)
+
+    def test_format_delta_prompt_keeps_tool_calls_without_assistant_text(self):
+        """Tool calls stay in the delta (they bind the Tool Result ids)."""
+        from client import _format_delta_prompt
+
+        delta = [
+            {
+                "role": "assistant",
+                "content": "partial answer",
+                "tool_calls": [{"id": "c1", "function": {"name": "sh", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        ]
+        d_prompt = _format_delta_prompt(delta)
+        self.assertNotIn("partial answer", d_prompt)
+        self.assertIn("<tool_call>", d_prompt)
+        self.assertIn('"id": "c1"', d_prompt)
+        self.assertIn("Tool Result (c1):\nok", d_prompt)
+        self.assertIn("Continue the conversation from the latest tool result.", d_prompt)
+
     def test_mock_stream_tool_call_suppresses_trailing_hallucination(self):
         # TemporaryDirectory (not /tmp): on Windows "/tmp" resolves to a
         # drive-rooted \tmp with no guaranteed write access, and an
@@ -795,6 +832,46 @@ class AntigravityPluginTests(unittest.TestCase):
 
         client.close()
         mock_proc.terminate.assert_called()
+
+    def test_worker_followup_prompt_omits_previous_answer(self):
+        """End-to-end regression: the follow-up prompt must not echo the answer.
+
+        Turn 1 answers with text; turn 2 asks a new question. The payload
+        written to the worker for turn 2 must carry the new question and must
+        not carry turn 1's answer, or the model restates it.
+        """
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        client = AntigravityClient(cwd=tmp_dir.name)
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        prompts: list[str] = []
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.write.side_effect = lambda payload: prompts.append(payload)
+        fake_events = [
+            json.dumps({"event": "init", "conversation_id": "conv-followup"}),
+            json.dumps({"event": "step_update", "step_update": {"step_type": "text", "text_delta": "PREVIOUS ANSWER"}}),
+            json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": "PREVIOUS ANSWER", "usage": {}}}),
+        ]
+        mock_proc.stdout.readline.side_effect = [f"{line}\n" for line in fake_events] * 2 + [""]
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            msgs1 = [{"role": "user", "content": "first question"}]
+            list(client.chat.completions.create(model="gemini-3.8-flash", messages=msgs1, stream=True))
+
+            msgs2 = msgs1 + [
+                {"role": "assistant", "content": "PREVIOUS ANSWER"},
+                {"role": "user", "content": "second question"},
+            ]
+            list(client.chat.completions.create(model="gemini-3.8-flash", messages=msgs2, stream=True))
+
+        # One payload per turn, and turn 2 is a continuation (same worker).
+        self.assertEqual(len(prompts), 2)
+        mock_proc.terminate.assert_not_called()
+        self.assertIn("second question", prompts[1])
+        self.assertNotIn("PREVIOUS ANSWER", prompts[1])
+
+        client.close()
 
     @staticmethod
     def _scripted_proc(events: list[str], *, alive: bool) -> MagicMock:

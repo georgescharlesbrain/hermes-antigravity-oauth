@@ -306,6 +306,37 @@ class AntigravityClient:
         # session cannot corrupt a later session's baseline.
         self._worker_usage_baseline: dict[str, int] = {}
         self._worker_lock = threading.Lock()
+        self._prewarm_thread: threading.Thread | None = None
+
+    def start_prewarmer(self, *, model: str, reasoning_config: dict | None = None) -> None:
+        """Start the selected agy worker while the Hermes session is opening.
+
+        agy reads GEMINI.md for its first user event, not at process launch.
+        The first completion writes the full rules before sending that event.
+        This hook never waits for CLI initialization or changes the request path.
+        """
+        effort = None
+        if isinstance(reasoning_config, dict):
+            effort = "low" if reasoning_config.get("enabled") is False else reasoning_config.get("effort")
+        resolved_model, resolved_effort = self._resolve_model_and_effort(model, effort)
+
+        def warm() -> None:
+            try:
+                if not is_authenticated():
+                    return
+                with self._lock:
+                    if not self.is_closed:
+                        self._get_or_spawn_worker(resolved_model, resolved_effort)
+            except Exception:
+                # The normal request path can retry or fail with its own error;
+                # prewarm is opportunistic and must not crash a gateway thread.
+                logger.debug("Antigravity prewarm unavailable", exc_info=True)
+
+        with self._lock:
+            if self.is_closed or self._prewarm_thread is not None:
+                return
+            self._prewarm_thread = threading.Thread(target=warm, name="agy-prewarm", daemon=True)
+            self._prewarm_thread.start()
 
     @staticmethod
     def _resolve_real_token_path() -> Path | None:
@@ -472,6 +503,8 @@ class AntigravityClient:
 
     def _get_or_spawn_worker(self, model: str, effort: str | None) -> subprocess.Popen:
         with self._lock:
+            if self.is_closed:
+                raise RuntimeError("AntigravityClient is closed.")
             if (
                 self._worker_proc is not None
                 and self._worker_proc.poll() is None

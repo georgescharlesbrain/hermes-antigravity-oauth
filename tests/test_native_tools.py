@@ -44,6 +44,21 @@ class TranslateTests(unittest.TestCase):
         c = native_tools.translate(_step("grep_search", {"Query": "foo", "SearchPath": "/r"}), {"search_files"}, 0)
         self.assertEqual(json.loads(c.function.arguments), {"pattern": "foo", "target": "content", "path": "/r"})
 
+    def test_write_file_maps_to_write_file(self):
+        call = native_tools.translate(_step("write_file", {"Path": "/tmp/foo.txt", "Content": "hello world"}), {"write_file"}, 0)
+        self.assertEqual(call.function.name, "write_file")
+        self.assertEqual(json.loads(call.function.arguments), {"path": "/tmp/foo.txt", "content": "hello world"})
+
+    def test_read_file_maps_to_read_file(self):
+        call = native_tools.translate(_step("read_file", {"Path": "/tmp/foo.txt", "StartLine": 10, "EndLine": 25}), {"read_file"}, 0)
+        self.assertEqual(call.function.name, "read_file")
+        self.assertEqual(json.loads(call.function.arguments), {"path": "/tmp/foo.txt", "offset": 10, "limit": 16})
+
+    def test_edit_file_maps_to_patch(self):
+        call = native_tools.translate(_step("edit_file", {"Path": "/tmp/foo.py", "Target": "old", "Replacement": "new"}), {"patch"}, 0)
+        self.assertEqual(call.function.name, "patch")
+        self.assertEqual(json.loads(call.function.arguments), {"path": "/tmp/foo.py", "old_string": "old", "new_string": "new"})
+
 
 class StreamBridgeTests(unittest.TestCase):
     def _run(self, events, tools):

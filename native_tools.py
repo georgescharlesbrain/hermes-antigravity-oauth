@@ -38,22 +38,44 @@ def _terminal(p: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _read_file(p: dict[str, Any]) -> dict[str, Any] | None:
-    path = _pick(p, "AbsolutePath", "path", "file_path", "FilePath")
+    path = _pick(p, "Path", "AbsolutePath", "path", "file_path", "FilePath")
     if not path:
         return None
     out: dict[str, Any] = {"path": str(path)}
-    if (start := _pick(p, "StartLine", "offset")) is not None:
+    if (start := _pick(p, "StartLine", "offset", "start_line")) is not None:
         try:
             out["offset"] = max(1, int(start))
+        except (TypeError, ValueError):
+            pass
+    if (limit := _pick(p, "limit", "Limit")) is not None:
+        try:
+            out["limit"] = int(limit)
+        except (TypeError, ValueError):
+            pass
+    elif (end := _pick(p, "EndLine", "end_line", "End")) is not None:
+        try:
+            start_val = out.get("offset", 1)
+            end_val = int(end)
+            if end_val >= start_val:
+                out["limit"] = end_val - start_val + 1
         except (TypeError, ValueError):
             pass
     return out
 
 
 def _write_file(p: dict[str, Any]) -> dict[str, Any] | None:
-    path = _pick(p, "TargetFile", "path", "AbsolutePath")
-    content = _pick(p, "CodeContent", "content", "Content")
+    path = _pick(p, "Path", "TargetFile", "path", "AbsolutePath", "file_path", "FilePath")
+    content = _pick(p, "Content", "CodeContent", "content")
     return {"path": str(path), "content": str(content)} if path and content is not None else None
+
+
+def _patch(p: dict[str, Any]) -> dict[str, Any] | None:
+    path = _pick(p, "Path", "path", "file_path", "FilePath", "AbsolutePath")
+    old_string = _pick(p, "Target", "old_string", "OldString", "target")
+    new_string = _pick(p, "Replacement", "new_string", "NewString", "replacement")
+    if not path or old_string is None or new_string is None:
+        return None
+    return {"path": str(path), "old_string": str(old_string), "new_string": str(new_string)}
 
 
 def _search_content(p: dict[str, Any]) -> dict[str, Any] | None:
@@ -90,7 +112,10 @@ def _web_extract(p: dict[str, Any]) -> dict[str, Any] | None:
 NATIVE_TO_HERMES: dict[str, tuple[str, Mapper]] = {
     "run_command": ("terminal", _terminal),
     "view_file": ("read_file", _read_file),
+    "read_file": ("read_file", _read_file),
     "write_to_file": ("write_file", _write_file),
+    "write_file": ("write_file", _write_file),
+    "edit_file": ("patch", _patch),
     "grep_search": ("search_files", _search_content),
     "find_by_name": ("search_files", _search_files),
     "search_web": ("web_search", _web_search),

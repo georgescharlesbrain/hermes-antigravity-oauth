@@ -94,6 +94,7 @@ class AntigravityPluginTests(unittest.TestCase):
         self.addCleanup(patcher_token.stop)
         self.addCleanup(patcher_cmd.stop)
         self.addCleanup(patcher_keychains.stop)
+        _pkg.register_provider(_pkg.antigravity_profile)
 
     @staticmethod
     def _write_token(tmp_dir: str) -> Path:

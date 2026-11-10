@@ -484,28 +484,49 @@ class AntigravityClient:
         with self._lock:
             self._worker_history = list(messages or [])
 
+    def _ensure_workspace(self) -> bool:
+        """Recreate the scratch workspace and isolated HOME if external cleanup removed them.
+
+        Returns True if the workspace or isolated gemini dir had to be recreated, in which
+        case any running worker bound to the deleted directory is retired so the next turn
+        spawns a fresh worker and replays Hermes' message history seamlessly.
+        """
+        cwd_path = Path(self._cwd)
+        gemini_dir = Path(self._isolated_gemini_dir)
+        recreated = not cwd_path.is_dir() or not gemini_dir.is_dir()
+        if recreated:
+            self._isolated_home, self._isolated_gemini_dir = setup_isolated_home(self._cwd)
+            with self._lock:
+                self._rules_digest = None
+                self._terminate_worker_locked()
+        return recreated
+
     def _sync_workspace_rules(self, messages: list[dict[str, Any]]) -> bool:
         """Write SOUL.md + Hermes system prompt to the workspace GEMINI.md agy loads as rules.
 
         Returns True when rules are in the workspace (prompt then omits them). A changed digest
         retires the running worker, because agy reads rules at session start.
         """
+        self._ensure_workspace()
         if not _soul.rules_enabled():
             return False
         rules = _soul.build_rules(_soul.system_parts_of(messages, _render_message_content), _PROMPT_PREAMBLE)
+        rules_file_missing = not (Path(self._cwd) / _soul.RULES_FILENAME).is_file()
         try:
             digest = _soul.write_rules(self._cwd, rules)
         except OSError as exc:
             logger.warning("Antigravity: could not write workspace rules (%s); inlining them", exc)
             return False
         with self._lock:
-            changed = getattr(self, "_rules_digest", None) not in (None, digest)
+            prev_digest = getattr(self, "_rules_digest", None)
+            changed = prev_digest not in (None, digest) or (prev_digest is not None and rules_file_missing)
             self._rules_digest = digest
         if changed:
             self._terminate_worker()
         return True
 
     def _get_or_spawn_worker(self, model: str, effort: str | None) -> subprocess.Popen:
+        self._ensure_workspace()
         with self._lock:
             if self.is_closed:
                 raise RuntimeError("AntigravityClient is closed.")

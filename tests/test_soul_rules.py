@@ -62,6 +62,40 @@ class SoulRulesTests(unittest.TestCase):
         self.assertNotEqual(soul.write_rules(self.ws, "b\n"), d1)
         self.assertEqual(Path(self.ws, "GEMINI.md").read_text(), "b\n")
 
+    def test_deleted_scratch_workspace_is_recreated_and_healed(self):
+        import shutil
+        from unittest.mock import MagicMock
+        from client import AntigravityClient
+
+        scratch_dir = Path(self.ws) / "hermes_agy_ephemeral"
+        client = AntigravityClient(cwd=str(scratch_dir))
+        self.addCleanup(client.close)
+        self.assertTrue(scratch_dir.is_dir())
+        self.assertTrue(Path(client._isolated_gemini_dir).is_dir())
+
+        messages = [{"role": "system", "content": "SYS-1"}, {"role": "user", "content": "hello"}]
+        self.assertTrue(client._sync_workspace_rules(messages))
+        self.assertTrue((scratch_dir / "GEMINI.md").is_file())
+
+        # Simulate a running worker before the 21-day scratch cleanup removes the directory.
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = None
+        client._worker_proc = fake_proc
+        client._worker_model = "gemini-4-argon"
+        client._worker_history = list(messages)
+
+        shutil.rmtree(scratch_dir)
+        self.assertFalse(scratch_dir.exists())
+
+        # Next turn must self-heal the scratch directory, isolated HOME, and GEMINI.md,
+        # and retire the stale worker so history is replayed into a fresh worker.
+        self.assertTrue(client._sync_workspace_rules(messages))
+        self.assertTrue(scratch_dir.is_dir())
+        self.assertTrue(Path(client._isolated_gemini_dir).is_dir())
+        self.assertTrue((scratch_dir / "GEMINI.md").is_file())
+        self.assertIsNone(client._worker_proc)
+        self.assertEqual(client._worker_history, [])
+
     def test_prompt_omits_system_and_preamble_when_rules_in_workspace(self):
         messages = [{"role": "system", "content": "SYSTEM-XYZ"}, {"role": "user", "content": "hi"}]
         inline = _format_messages_as_prompt(messages)

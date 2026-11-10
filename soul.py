@@ -85,7 +85,9 @@ def rules_overflow_tail(
 
 def write_rules(workspace: str | Path, text: str) -> str:
     """Atomically write ``GEMINI.md``; return its sha256 so callers can respawn agy when it changes."""
-    path = Path(workspace) / RULES_FILENAME
+    ws = Path(workspace)
+    ws.mkdir(parents=True, exist_ok=True)
+    path = ws / RULES_FILENAME
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     try:
         if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest:

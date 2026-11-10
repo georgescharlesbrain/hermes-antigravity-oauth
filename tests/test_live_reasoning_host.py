@@ -16,6 +16,9 @@ from unittest.mock import MagicMock, patch
 import os
 import tempfile
 
+_ORIG_HERMES_HOME = os.environ.get('HERMES_HOME')
+_ORIG_AGY_CLI_PATH = os.environ.get('AGY_CLI_PATH')
+
 # Hermetic HERMES_HOME holding only this checkout as an installed plugin, so
 # provider discovery finds the code under test (not a host-installed copy, and
 # not nothing at all on a clean CI runner).
@@ -32,7 +35,9 @@ os.chmod(_FAKE_AGY, 0o755)
 os.environ['AGY_CLI_PATH'] = _FAKE_AGY
 
 # Fallback for a local run without PYTHONPATH; never shadow an explicit checkout.
-sys.path.append(str(Path.home()/'.hermes'/'hermes-agent'))
+for _cand in (Path('/usr/local/lib/hermes-agent'), Path.home()/'.hermes'/'hermes-agent'):
+    if _cand.is_dir() and str(_cand) not in sys.path:
+        sys.path.append(str(_cand))
 import hermes_bootstrap
 from hermes_cli.plugins_discovery import suppress_plugin_discovery
 
@@ -46,6 +51,30 @@ with suppress_plugin_discovery():
     from providers import get_provider_profile
     from tui_gateway import server
 
+# Restore process environment right after import so pytest collection of this
+# module does not leak _HERMES_HOME / _FAKE_AGY into sibling test modules.
+# setUpModule / tearDownModule re-apply them while HostPathTests runs.
+def _restore_env():
+    if _ORIG_HERMES_HOME is None:
+        os.environ.pop('HERMES_HOME', None)
+    else:
+        os.environ['HERMES_HOME'] = _ORIG_HERMES_HOME
+    if _ORIG_AGY_CLI_PATH is None:
+        os.environ.pop('AGY_CLI_PATH', None)
+    else:
+        os.environ['AGY_CLI_PATH'] = _ORIG_AGY_CLI_PATH
+
+_restore_env()
+
+
+def setUpModule():
+    os.environ['HERMES_HOME'] = _HERMES_HOME
+    os.environ['AGY_CLI_PATH'] = _FAKE_AGY
+
+
+def tearDownModule():
+    _restore_env()
+
 
 class HostPathTests(unittest.TestCase):
     def setUp(self):
@@ -57,12 +86,13 @@ class HostPathTests(unittest.TestCase):
         self.client_module = importlib.import_module(type(self.profile).__module__+'.client')
         self.frames = []
         self.sid = 'adapter-regression'
-        self.agent = AIAgent(provider='antigravity-oauth',model='gemini-4-argon',base_url='agy://local',
-            api_mode='chat_completions',session_id='adapter-regression-store',platform='tui',
-            enabled_toolsets=[],disabled_toolsets=['all'],quiet_mode=True,skip_context_files=True,
-            skip_memory=True,skip_background_review=True,load_soul_identity=False,
-            reasoning_callback=server._agent_cbs(self.sid)['reasoning_callback'],
-            stream_delta_callback=lambda text: None)
+        with patch.object(self.client_module.AntigravityClient, 'start_prewarmer'):
+            self.agent = AIAgent(provider='antigravity-oauth',model='gemini-4-argon',base_url='agy://local',
+                api_mode='chat_completions',session_id='adapter-regression-store',platform='tui',
+                enabled_toolsets=[],disabled_toolsets=['all'],quiet_mode=True,skip_context_files=True,
+                skip_memory=True,skip_background_review=True,load_soul_identity=False,
+                reasoning_callback=server._agent_cbs(self.sid)['reasoning_callback'],
+                stream_delta_callback=lambda text: None)
         self.addCleanup(self.agent.client.close)
         server._sessions[self.sid] = {'agent':self.agent,'running':True,'show_reasoning':True,'profile_home':None}
         self.addCleanup(server._sessions.pop,self.sid,None)

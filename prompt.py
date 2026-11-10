@@ -16,7 +16,7 @@ _ROLE_LABELS = {
 
 _PROMPT_PREAMBLE = (
     "You are being used strictly as an LLM inference backend for Hermes Agent.",
-    "You do not possess any local execution tools in this mode. You MUST NOT attempt to invoke native agent tools (such as run_command, write_to_file, view_file, etc.).",
+    "You do not possess any local execution tools in this mode. You MUST NOT attempt to invoke native agent or default_api tools (such as run_command, read_file, write_file, edit_file, write_to_file, view_file, replace_file_content, grep_search, find_by_name, list_dir, search_web, ask_question, invoke_subagent, manage_task, schedule, etc.).",
     "All tool executions and filesystem interactions are performed exclusively by Hermes Agent.",
     "IMPORTANT INSTRUCTIONS FOR TOOLS:",
     "- If you need to call a tool, emit ONLY <tool_call>{...}</tool_call> blocks in your text output.",
@@ -270,6 +270,17 @@ def _format_messages_as_prompt(
 
     if system_parts and not rules_in_workspace:
         sections.append("### SYSTEM INSTRUCTIONS (HERMES AGENT):\n" + "\n\n".join(f"System:\n{p}" for p in system_parts))
+    elif system_parts and rules_in_workspace:
+        try:
+            from . import soul as _soul_mod
+        except ImportError:
+            import soul as _soul_mod
+        overflow = _soul_mod.rules_overflow_tail(system_parts, _PROMPT_PREAMBLE)
+        if overflow:
+            sections.append(
+                "### SYSTEM INSTRUCTIONS (HERMES AGENT — WORKSPACE RULES CONTINUATION):\n"
+                f"System:\n{overflow}"
+            )
 
     transcript_items: list[dict[str, Any]] = []
     prior_messages = history_messages[:-1] if last_role == "user" and len(history_messages) > 1 else history_messages

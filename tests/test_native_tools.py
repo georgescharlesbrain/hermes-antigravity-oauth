@@ -59,6 +59,99 @@ class TranslateTests(unittest.TestCase):
         self.assertEqual(call.function.name, "patch")
         self.assertEqual(json.loads(call.function.arguments), {"path": "/tmp/foo.py", "old_string": "old", "new_string": "new"})
 
+    def test_replace_and_multi_replace_file_content_map_to_patch(self):
+        call = native_tools.translate(
+            _step("replace_file_content", {
+                "TargetFile": "/tmp/foo.py",
+                "TargetContent": "old",
+                "ReplacementContent": "new",
+                "AllowMultiple": True,
+            }),
+            {"patch"},
+            0,
+        )
+        self.assertEqual(call.function.name, "patch")
+        self.assertEqual(
+            json.loads(call.function.arguments),
+            {"path": "/tmp/foo.py", "old_string": "old", "new_string": "new", "replace_all": True},
+        )
+        chunk_call = native_tools.translate(
+            _step("multi_replace_file_content", {
+                "TargetFile": "/tmp/foo.py",
+                "ReplacementChunks": [{"TargetContent": "a", "ReplacementContent": "b", "AllowMultiple": False}],
+            }),
+            {"patch"},
+            0,
+        )
+        self.assertEqual(
+            json.loads(chunk_call.function.arguments),
+            {"path": "/tmp/foo.py", "old_string": "a", "new_string": "b", "replace_all": False},
+        )
+        # Multi-chunk cannot be represented atomically by a single Hermes patch call.
+        self.assertIsNone(native_tools.translate(
+            _step("multi_replace_file_content", {
+                "TargetFile": "/tmp/foo.py",
+                "ReplacementChunks": [
+                    {"TargetContent": "a", "ReplacementContent": "b"},
+                    {"TargetContent": "c", "ReplacementContent": "d"},
+                ],
+            }),
+            {"patch"},
+            0,
+        ))
+
+    def test_list_dir_and_search_web_domain(self):
+        c = native_tools.translate(_step("list_dir", {"DirectoryPath": "/src"}), {"search_files"}, 0)
+        self.assertEqual(json.loads(c.function.arguments), {"pattern": "*", "target": "files", "path": "/src"})
+        w = native_tools.translate(_step("search_web", {"query": "asyncio", "domain": "docs.python.org"}), {"web_search"}, 0)
+        self.assertEqual(json.loads(w.function.arguments), {"query": "site:docs.python.org asyncio"})
+
+    def test_ask_question_maps_to_clarify(self):
+        c = native_tools.translate(
+            _step("ask_question", {
+                "questions": [{
+                    "question": "Which branch?",
+                    "options": ["(Recommended) main", "develop"],
+                    "is_multi_select": False,
+                }],
+            }),
+            {"clarify"},
+            0,
+        )
+        self.assertEqual(c.function.name, "clarify")
+        self.assertEqual(
+            json.loads(c.function.arguments),
+            {"questions": [{"question": "Which branch?", "choices": ["main", "develop"], "multi_select": False}]},
+        )
+
+    def test_subagent_and_process_and_schedule_mappings(self):
+        sub = native_tools.translate(
+            _step("invoke_subagent", {"Prompt": "Audit auth", "Role": "Security Reviewer"}),
+            {"delegate_task"},
+            0,
+        )
+        self.assertEqual(sub.function.name, "delegate_task")
+        self.assertEqual(
+            json.loads(sub.function.arguments),
+            {"tasks": [{"goal": "Audit auth", "context": "Role: Security Reviewer"}]},
+        )
+        lst = native_tools.translate(_step("manage_subagents", {"Action": "list"}), {"delegate_task"}, 0)
+        self.assertEqual(json.loads(lst.function.arguments), {"action": "list"})
+        msg = native_tools.translate(
+            _step("send_message", {"Recipient": "sub-1", "Message": "Focus on token" }),
+            {"delegate_task"},
+            0,
+        )
+        self.assertEqual(json.loads(msg.function.arguments), {"action": "steer", "subagent_id": "sub-1", "message": "Focus on token"})
+        pm = native_tools.translate(_step("manage_task", {"Action": "status", "TaskId": "proc_1"}), {"process_manage"}, 0)
+        self.assertEqual(json.loads(pm.function.arguments), {"action": "poll", "session_id": "proc_1"})
+        cron = native_tools.translate(
+            _step("schedule", {"Prompt": "Check health", "CronExpression": "0 * * * *"}),
+            {"cronjob_manage"},
+            0,
+        )
+        self.assertEqual(json.loads(cron.function.arguments), {"action": "create", "prompt": "Check health", "schedule": "0 * * * *"})
+
 
 class StreamBridgeTests(unittest.TestCase):
     def _run(self, events, tools):
@@ -121,6 +214,22 @@ class TruncatedPreviewTests(unittest.TestCase):
             full = native_tools.restore_truncated({"CommandLine": self.preview(), "Cwd": "/tmp"},
                                                   "run_command", "conv1", [Path(d)], wait=0)
         self.assertEqual(full["CommandLine"], self.FULL)
+
+    def test_nested_truncated_chunk_is_restored_from_transcript(self):
+        with tempfile.TemporaryDirectory() as d:
+            full_chunks = [{"TargetContent": "old", "ReplacementContent": self.FULL}]
+            preview_chunks = [{"TargetContent": "old", "ReplacementContent": self.preview()}]
+            _transcript(d, "conv_nested", [{"name": "multi_replace_file_content", "args": {"TargetFile": "/a.py", "ReplacementChunks": full_chunks}}])
+            self.assertEqual(native_tools.truncated_keys({"TargetFile": "/a.py", "ReplacementChunks": preview_chunks}), ["ReplacementChunks"])
+            restored = native_tools.restore_truncated(
+                {"TargetFile": "/a.py", "ReplacementChunks": preview_chunks},
+                "multi_replace_file_content",
+                "conv_nested",
+                [Path(d)],
+                wait=0,
+            )
+        assert restored is not None
+        self.assertEqual(restored["ReplacementChunks"][0]["ReplacementContent"], self.FULL)
 
     def test_mismatching_transcript_or_missing_file_refuses(self):
         with tempfile.TemporaryDirectory() as d:

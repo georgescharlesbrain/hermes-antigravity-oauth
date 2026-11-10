@@ -20,6 +20,10 @@ from typing import Any, Iterable
 
 RULES_FILENAME = "GEMINI.md"
 _SOUL_PROBE_CHARS = 240
+# agy CLI hard-truncates each workspace rule file (GEMINI.md) at 16 KiB (16,384 bytes)
+# with a `<truncated N bytes>` marker. Keep a small safety margin when computing overflow.
+AGY_RULE_FILE_MAX_BYTES = 16384
+_OVERFLOW_OVERLAP_BYTES = 256
 
 
 def rules_enabled() -> bool:
@@ -55,11 +59,28 @@ def build_rules(system_parts: Iterable[str], preamble: Iterable[str]) -> str:
                 "These rules come from Hermes Agent, which drives this session. Follow them for every reply."]
     if soul and not _soul_present(soul, system_text):
         sections.append(f"## Persona (SOUL.md)\n\n{soul}")
-    if system_text:
-        sections.append(f"## Hermes system prompt\n\n{system_text}")
+    # Place the tool contract BEFORE the large Hermes system prompt so agy's 16 KiB
+    # per-rule-file truncation never cuts off the <tool_call> protocol instructions.
     sections.append("## Tool contract\n\n" + "\n".join(f"- {line}" if not line.endswith(":") else line
                                                        for line in preamble))
+    if system_text:
+        sections.append(f"## Hermes system prompt\n\n{system_text}")
     return "\n\n".join(sections).strip() + "\n"
+
+
+def rules_overflow_tail(
+    system_parts: Iterable[str],
+    preamble: Iterable[str],
+    max_bytes: int = AGY_RULE_FILE_MAX_BYTES,
+) -> str:
+    """Return the UTF-8 tail of ``build_rules(...)`` that agy's 16 KiB GEMINI.md cap truncates."""
+    full_rules = build_rules(system_parts, preamble)
+    encoded = full_rules.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return ""
+    start = max(0, max_bytes - _OVERFLOW_OVERLAP_BYTES)
+    tail = encoded[start:].decode("utf-8", errors="ignore").strip()
+    return tail
 
 
 def write_rules(workspace: str | Path, text: str) -> str:

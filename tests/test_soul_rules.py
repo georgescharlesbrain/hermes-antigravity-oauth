@@ -34,6 +34,16 @@ class SoulRulesTests(unittest.TestCase):
         self.assertIn("MANGO-31", rules)
         self.assertLess(rules.index("MANGO-31"), rules.index("helpful assistant"))
         self.assertIn("<tool_call>", rules)
+        # Tool contract must precede the large Hermes system prompt so agy's 16 KiB
+        # GEMINI.md truncation never cuts off the <tool_call> instructions.
+        self.assertLess(rules.index("## Tool contract"), rules.index("## Hermes system prompt"))
+
+    def test_oversized_workspace_rules_overflow_is_preserved_in_prompt(self):
+        large_sys = "HEADER-START\n" + ("x" * 18000) + "\nTAIL-CANARY-99"
+        messages = [{"role": "system", "content": large_sys}, {"role": "user", "content": "hi"}]
+        ruled = _format_messages_as_prompt(messages, rules_in_workspace=True)
+        self.assertNotIn("HEADER-START", ruled)
+        self.assertIn("TAIL-CANARY-99", ruled)
 
     def test_soul_not_duplicated_when_hermes_already_injected_it(self):
         rules = soul.build_rules([SOUL_TEXT + "\n\nMore Hermes instructions."], _PROMPT_PREAMBLE)
